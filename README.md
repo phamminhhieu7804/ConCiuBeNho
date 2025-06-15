@@ -1,5 +1,10 @@
 # ConCiuBeNho
 
+git clone https://github.com/phamminhhieu7804/ConCiuBeNho.git
+cd ConCiuBeNho
+conda env create -f environment.yml
+conda activate captcha
+
 ## Các lệnh chính
 
 1. **Thu thập ảnh thật**  
@@ -15,10 +20,10 @@
    `python captcha_cnn_solver.py train --epochs 30`
 
 5. **Fine-tune trên ảnh thật**  
-   `python captcha_cnn_solver.py train_real \
-  --real_dir data/real/train \
-  --val_dir  data/real/val \
-  --epochs   5`
+    `python captcha_cnn_solver.py train_real \
+--real_dir data/real/train \
+--val_dir  data/real/val \
+--epochs   5`
 
 6. **Đánh giá test set thật**  
    `python captcha_cnn_solver.py eval_real --test_dir data/real/test`
