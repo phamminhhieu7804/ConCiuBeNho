@@ -13,8 +13,6 @@ from captcha.image import ImageCaptcha
 import cv2
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-# import tensorflow_addons as tfa  # removed due to compatibility issues
-
 
 # Default Configuration
 WIDTH, HEIGHT, N_LEN = 170, 80, 4
@@ -24,28 +22,24 @@ DEFAULT_BATCH_SIZE = 64
 DEFAULT_STEPS = 1000
 DEFAULT_EPOCHS = 30
 
-# Paths  
-WEIGHTS_PATH = 'captcha_cnn.weights.h5'  
-# directories for real data  
-REAL_RAW_DIR    = 'data/real/raw'  
+# Paths
+WEIGHTS_PATH = 'captcha_cnn.weights.h5'
+REAL_RAW_DIR = 'data/real/raw'
 REAL_LABELED_DIR = 'data/real/labeled'
 
-
-# Set mixed precision
+# Set mixed precision policy
 if tf.config.list_physical_devices('GPU'):
     set_global_policy('mixed_float16')
     print('Mixed precision policy: mixed_float16 enabled')
 else:
     print('Mixed precision policy: GPU not found, using default float32')
 
-# Optimizer
-def get_optimizer():
-    lr_schedule = ExponentialDecay(
-        initial_learning_rate=1e-4,
-        decay_steps=1000,
-        decay_rate=0.5,
-        staircase=True
-    )
+# Optimizer factory
+def get_optimizer(lr=1e-4):
+    lr_schedule = ExponentialDecay(initial_learning_rate=lr,
+                                   decay_steps=1000,
+                                   decay_rate=0.5,
+                                   staircase=True)
     return Adam(learning_rate=lr_schedule, clipnorm=1.0)
 
 # Model builder
@@ -71,14 +65,15 @@ def make_dataset(batch_size):
         while True:
             text = ''.join(random.choice(CHARS) for _ in range(N_LEN))
             img = np.array(generator.generate_image(text)) / 255.0
-            labels = [tf.one_hot(CHARS.find(ch), N_CLASS) for ch in text]
+            labels = [tf.one_hot(CHARS.index(ch), N_CLASS) for ch in text]
             yield img, tuple(labels)
+
     output_signature = (
         tf.TensorSpec((HEIGHT, WIDTH, 3), tf.float32),
         tuple([tf.TensorSpec((N_CLASS,), tf.float32)] * N_LEN)
     )
     ds = tf.data.Dataset.from_generator(gen, output_signature=output_signature)
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    ds = ds.cache().batch(batch_size).prefetch(tf.data.AUTOTUNE)
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
     ds = ds.with_options(options)
@@ -87,38 +82,23 @@ def make_dataset(batch_size):
 
 # Real data pipeline
 def make_real_dataset(dir_path, batch_size, shuffle=True):
-    # List files
     files = tf.data.Dataset.list_files(os.path.join(dir_path, '*.png'), shuffle=shuffle)
     def parse_fn(fp):
         img = tf.io.read_file(fp)
         img = tf.image.decode_png(img, channels=3)
         img = tf.image.resize(img, [HEIGHT, WIDTH]) / 255.0
-        # Extract label
         fname = tf.strings.split(fp, os.sep)[-1]
         label_str = tf.strings.regex_replace(fname, r'\.png$', '')
         chars = tf.strings.unicode_split(label_str, 'UTF-8')
-        def onehot(ch):
-            ch = ch.numpy().decode('utf-8')
-            idx = CHARS.index(ch)
-            return np.eye(N_CLASS, dtype=np.float32)[idx]
-        labels = tf.py_function(lambda x: [onehot(c) for c in x], [chars], Tout=tf.float32)
-        labels = tuple(tf.reshape(labels[i], (N_CLASS,)) for i in range(N_LEN))
+        labels = tf.stack([tf.one_hot(CHARS.index(c.numpy().decode()), N_CLASS) for c in chars])
+        labels = tuple(labels[i] for i in range(N_LEN))
         return img, labels
-    def augment(img, lbl):
-        img = tf.image.random_brightness(img, 0.2)
-        img = tf.image.random_contrast(img, 0.8, 1.2)
-        # rotation removed for compatibility
-        return img, lbl
-    ds = files.map(parse_fn, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    return ds
-    ds = files.map(parse_fn, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = files.map(lambda fp: tf.py_function(parse_fn, [fp], [tf.float32]+[tf.float32]*N_LEN), num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(lambda img, *lbl: (img, tuple(lbl)), num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
 
-# Collection utility
+# Collect utility
 def collect_captcha(n=2000):
     os.makedirs(REAL_RAW_DIR, exist_ok=True)
     driver = webdriver.Chrome(options=Options())
@@ -130,26 +110,79 @@ def collect_captcha(n=2000):
     driver.quit()
     print(f'Collected {n} images to {REAL_RAW_DIR}')
 
-# Training synthetic
+# Train on synthetic
 def train_model(batch_size, steps, epochs):
-    # ... existing synthetic train code ...
-    pass
+    model = build_model()
+    # Resume if weights exist
+    if os.path.exists(WEIGHTS_PATH):
+        print('Loading model weights…')
+        model.load_weights(WEIGHTS_PATH)
+    else:
+        print('Training new model from scratch…')
+    optimizer = get_optimizer()
+    model.compile(optimizer=optimizer,
+                  loss=['categorical_crossentropy']*N_LEN,
+                  metrics=['accuracy']*N_LEN)
+    ds = make_dataset(batch_size)
+    callbacks = [
+        tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=3),
+        tf.keras.callbacks.ModelCheckpoint(WEIGHTS_PATH, save_weights_only=True, save_best_only=True, monitor='loss')
+    ]
+    model.fit(ds, steps_per_epoch=steps, epochs=epochs, callbacks=callbacks, verbose=1)
+    print('Synthetic training complete')
 
-# Inference single CAPTCHA
+# Infer single CAPTCHA
 def infer_captcha():
-    # ... existing infer code ...
-    pass
+    model = build_model()
+    model.load_weights(WEIGHTS_PATH)
+    driver = webdriver.Chrome(options=Options())
+    driver.get('https://mydtu.duytan.edu.vn/Signin.aspx')
+    time.sleep(3)
+    elem = driver.find_element('xpath', '//img[contains(@src,"Captcha")]')
+    elem.screenshot('real_captcha.png')
+    driver.quit()
+    img = cv2.imread('real_captcha.png')
+    img = cv2.resize(img, (WIDTH, HEIGHT)) / 255.0
+    preds = model.predict(np.expand_dims(img, 0))
+    text = ''.join(CHARS[np.argmax(p)] for p in preds)
+    print('Predicted CAPTCHA:', text)
 
-# Testing synthetic on real site
+# Test synthetic model on real site
 def test_real_captcha(n, username, password):
-    # ... existing test code ...
-    pass
+    model = build_model()
+    model.load_weights(WEIGHTS_PATH)
+    opts = Options()
+    driver = webdriver.Chrome(options=opts)
+    success = 0
+    for _ in range(n):
+        driver.get('https://mydtu.duytan.edu.vn/Signin.aspx')
+        time.sleep(1)
+        elem = driver.find_element('xpath', '//img[contains(@src,"Captcha")]')
+        elem.screenshot('tmp.png')
+        img = cv2.imread('tmp.png')
+        img = cv2.resize(img, (WIDTH, HEIGHT)) / 255.0
+        preds = model.predict(np.expand_dims(img, 0))
+        text = ''.join(CHARS[np.argmax(p)] for p in preds)
+        driver.find_element('id','txtUser').send_keys(username)
+        driver.find_element('id','txtPass').send_keys(password)
+        driver.find_element('id','txtCaptcha').send_keys(text)
+        driver.find_element('id','btnLogin').click()
+        time.sleep(0.5)
+        if 'Signin.aspx' not in driver.current_url:
+            success += 1
+    driver.quit()
+    print(f'Tested {n}, success {success}/{n} = {success/n*100:.2f}%')
 
 # Fine-tune on real data
 def train_real(real_dir, val_dir, epochs):
     model = build_model()
-    model.load_weights(WEIGHTS_PATH)
-    model.compile(optimizer=Adam(5e-5),
+    if os.path.exists(WEIGHTS_PATH):
+        print('Loading base weights for fine-tune…')
+        model.load_weights(WEIGHTS_PATH)
+    else:
+        print('No base weights found, training from scratch…')
+    optimizer = get_optimizer(5e-5)
+    model.compile(optimizer=optimizer,
                   loss=['categorical_crossentropy']*N_LEN,
                   metrics=['accuracy']*N_LEN)
     train_ds = make_real_dataset(real_dir, batch_size=32)
@@ -159,7 +192,7 @@ def train_real(real_dir, val_dir, epochs):
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True, verbose=1),
         tf.keras.callbacks.ModelCheckpoint(WEIGHTS_PATH, save_weights_only=True, save_best_only=True, monitor='val_loss')
     ]
-    model.fit(train_ds, validation_data=val_ds, epochs=epochs, callbacks=callbacks)
+    model.fit(train_ds, validation_data=val_ds, epochs=epochs, callbacks=callbacks, verbose=1)
     print('Fine-tune complete')
 
 # Evaluate on real test set
@@ -167,53 +200,38 @@ def eval_real(test_dir):
     model = build_model()
     model.load_weights(WEIGHTS_PATH)
     ds = make_real_dataset(test_dir, batch_size=32, shuffle=False)
-    loss, *accs = model.evaluate(ds)
+    loss, *accs = model.evaluate(ds, verbose=1)
     print('Per-char validation accuracy:', accs[-1])
-    # Full-string
     correct = total = 0
     for imgs, lbls in ds:
         preds = model.predict(imgs)
         for i in range(imgs.shape[0]):
-            true = ''.join(CHARS[int(tf.argmax(lbls[j][i]))] for j in range(N_LEN))
-            pred = ''.join(CHARS[int(np.argmax(preds[j][i]))] for j in range(N_LEN))
+            true = ''.join(CHARS[np.argmax(lbls[j][i])] for j in range(N_LEN))
+            pred = ''.join(CHARS[np.argmax(preds[j][i])] for j in range(N_LEN))
             if true == pred: correct += 1
             total += 1
     print(f'Full-string accuracy: {correct/total:.4f}')
 
-# Main CLI
+# CLI interface
 def main():
     parser = argparse.ArgumentParser(description='Captcha CNN Tool')
     sub = parser.add_subparsers(dest='command')
-
-    # collect
-    collect = sub.add_parser('collect', help='Collect real CAPTCHA images')
-    collect.add_argument('--n', type=int, default=2000)
-
-    # synthetic train
-    train = sub.add_parser('train', help='Train on synthetic data')
-    train.add_argument('--batch_size', type=int, default=DEFAULT_BATCH_SIZE)
-    train.add_argument('--steps', type=int, default=DEFAULT_STEPS)
-    train.add_argument('--epochs', type=int, default=DEFAULT_EPOCHS)
-
-    # fine-tune on real
-    train_real_cmd = sub.add_parser('train_real', help='Fine-tune on real data')
-    train_real_cmd.add_argument('--real_dir', type=str, required=True)
-    train_real_cmd.add_argument('--val_dir',  type=str, required=True)
-    train_real_cmd.add_argument('--epochs',   type=int, default=5)
-
-    # infer single
+    sub.add_parser('collect', help='Collect real CAPTCHA images').add_argument('--n', type=int, default=2000)
+    tr = sub.add_parser('train', help='Train on synthetic data')
+    tr.add_argument('--batch_size', type=int, default=DEFAULT_BATCH_SIZE)
+    tr.add_argument('--steps', type=int, default=DEFAULT_STEPS)
+    tr.add_argument('--epochs', type=int, default=DEFAULT_EPOCHS)
+    tr_real = sub.add_parser('train_real', help='Fine-tune on real data')
+    tr_real.add_argument('--real_dir', type=str, required=True)
+    tr_real.add_argument('--val_dir',  type=str, required=True)
+    tr_real.add_argument('--epochs',   type=int, default=5)
     sub.add_parser('infer', help='Infer a single CAPTCHA')
-
-    # test synthetic on real
-    test = sub.add_parser('test', help='Test synthetic model on real site')
-    test.add_argument('--n', type=int, default=100)
-    test.add_argument('--user', type=str, required=True)
-    test.add_argument('--pass', dest='passwd', type=str, required=True)
-
-    # evaluate on real test set
-    evalp = sub.add_parser('eval_real', help='Evaluate on real test dataset')
-    evalp.add_argument('--test_dir', type=str, required=True)
-
+    testp = sub.add_parser('test', help='Test synthetic model on real site')
+    testp.add_argument('--n', type=int, default=100)
+    testp.add_argument('--user',   type=str, required=True)
+    testp.add_argument('--pass', dest='passwd', type=str, required=True)
+    ev = sub.add_parser('eval_real', help='Evaluate on real test dataset')
+    ev.add_argument('--test_dir', type=str, required=True)
     args = parser.parse_args()
     if args.command == 'collect':
         collect_captcha(args.n)
