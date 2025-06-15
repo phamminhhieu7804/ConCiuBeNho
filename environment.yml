@@ -1,0 +1,12 @@
+name: captcha
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - tensorflow
+  - captcha
+  - selenium
+  - opencv-python
+  - pip
+  - pip:
+      - tensorflow-addons
