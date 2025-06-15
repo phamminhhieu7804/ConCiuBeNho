@@ -5,6 +5,14 @@ cd ConCiuBeNho
 conda env create -f environment.yml
 conda activate captcha
 
+pip install gdown
+gdown https://drive.google.com/uc?id=1MI8IKAZxJ-k6945JxiYxBQgo_FSSjQLj -O real_data.zip
+unzip real_data.zip -d data/real
+
+pip install gdown
+gdown https://drive.google.com/uc?id=1HAMsL3TPmIiETE4DIvxK-EuHTPUNkK2v -O captcha_weights.zip
+unzip captcha_weights.zip
+
 ## Các lệnh chính
 
 1. **Thu thập ảnh thật**  
