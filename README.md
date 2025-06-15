@@ -1,1 +1,27 @@
 # ConCiuBeNho
+
+## Các lệnh chính
+
+1. **Thu thập ảnh thật**  
+   `python captcha_cnn_solver.py collect --n 2000`
+
+2. **Gán nhãn thủ công**  
+   `python label_captcha.py`
+
+3. **Chia dataset**  
+   `python split_real.py`
+
+4. **Train synthetic**  
+   `python captcha_cnn_solver.py train --epochs 30`
+
+5. **Fine-tune trên ảnh thật**  
+   `python captcha_cnn_solver.py train_real \
+  --real_dir data/real/train \
+  --val_dir  data/real/val \
+  --epochs   5`
+
+6. **Đánh giá test set thật**  
+   `python captcha_cnn_solver.py eval_real --test_dir data/real/test`
+
+7. **Test end-to-end**  
+   `python captcha_cnn_solver.py test --n 100 --user YOUR_USER --pass YOUR_PASS`
