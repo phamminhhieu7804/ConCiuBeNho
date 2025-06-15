@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Dữ liệu và weights (nặng)
+data/
+
+*.weights.h5
+
+# Cấu hình IDE
+.vscode/
+.idea/
+
+# Các file logs, output tạm
+*.log
+*.tmp
